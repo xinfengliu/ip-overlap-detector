@@ -5,6 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -33,12 +36,25 @@ func init() {
 }
 
 func main() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		logrus.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
 	api.RegisterWorkerServer(s, &server{})
+
+	go func() {
+		sig := <-sigs
+		logrus.Infof("Received the signal '%v'.", sig)
+		logrus.Infof("Stopping gRPC server...")
+		s.Stop()
+		fmt.Println("Finished.")
+		os.Exit(0)
+	}()
+
 	logrus.Info("Starting gRPC server...")
 	if err := s.Serve(lis); err != nil {
 		logrus.Fatalf("failed to serve: %v", err)

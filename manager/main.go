@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/docker/swarmkit/api"
@@ -28,11 +31,13 @@ const (
 
 var (
 	workerRPCPort = 50051
+	intervalSec   = 60 * 10
 	verbose       bool
 )
 
 func init() {
 	flag.IntVar(&workerRPCPort, "port", 50051, "Worker server published port.")
+	flag.IntVar(&intervalSec, "interval", 600, "interval (seconds) for running the check.")
 	flag.BoolVar(&verbose, "D", false, "enable debugging log")
 	flag.Parse()
 	if verbose {
@@ -51,11 +56,29 @@ type nodeNetInfo struct {
 }
 
 func main() {
+	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+	defer ticker.Stop()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	for {
+		select {
+		case sig := <-sigs:
+			logrus.Infof("Received the signal '%v'.", sig)
+			fmt.Println("Finished.")
+			return
+		case <-ticker.C:
+			do()
+		}
+	}
+}
+
+func do() {
 	logrus.Info("Start Docker Overlay Network IP Overlap Checking...")
 	// find swarm nodes and node network attachments via swarmkit API
 	nodes, err := getSwarmNodeList()
 	if err != nil {
-		logrus.Error("Error getSwarmNodeList().", err)
+		logrus.Error("Error getSwarmNodeList(): ", err)
 		logrus.Fatal("Quiting.")
 	}
 
@@ -120,8 +143,6 @@ func main() {
 
 	// Info collection is done at this point. Run checks.
 	check(nodeNetInfoMap, nodeNAMap)
-
-	logrus.Info("DONE.")
 }
 
 func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo, nodeNAMap map[string]map[string]string) {

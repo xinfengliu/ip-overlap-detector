@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.2
+FROM golang:1.16.4-alpine3.13 AS base
+WORKDIR /src
+#ENV CGO_ENABLED=0
+COPY go.* .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+FROM base AS build
+RUN --mount=target=. \
+    --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -o /root/manager  manager/main.go
+
+
+FROM alpine:3.13.5 
+COPY --from=build /root/manager /manager
+EXPOSE 50051
+ENTRYPOINT ["/manager"]

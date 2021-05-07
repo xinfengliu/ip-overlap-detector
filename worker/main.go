@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"net"
 	"time"
 
@@ -20,8 +22,14 @@ const (
 	port = ":50051"
 )
 
+var verbose bool
+
 func init() {
-	logrus.SetLevel(logrus.DebugLevel)
+	flag.BoolVar(&verbose, "D", false, "enable debugging log")
+	flag.Parse()
+	if verbose {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
 }
 
 func main() {
@@ -31,6 +39,7 @@ func main() {
 	}
 	s := grpc.NewServer()
 	api.RegisterWorkerServer(s, &server{})
+	logrus.Info("Starting gRPC server...")
 	if err := s.Serve(lis); err != nil {
 		logrus.Fatalf("failed to serve: %v", err)
 	}
@@ -39,6 +48,7 @@ func main() {
 func (s *server) GetNetContainerInfo(context.Context, *emptypb.Empty) (*api.GetNetContainerInfoResponse, error) {
 	results, err := inspectNetworks()
 	if err != nil {
+		logrus.Error("Error inspectNetworks() =>", err)
 		return nil, err
 	}
 	return &api.GetNetContainerInfoResponse{Results: results}, nil
@@ -47,7 +57,7 @@ func (s *server) GetNetContainerInfo(context.Context, *emptypb.Empty) (*api.GetN
 func inspectNetworks() ([]*api.NetContainerInfo, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error getting docker client: %v", err)
 	}
 	defer cli.Close()
 
@@ -59,7 +69,7 @@ func inspectNetworks() ([]*api.NetContainerInfo, error) {
 	}
 	nets, err := cli.NetworkList(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error NetworkList(): %v", err)
 	}
 
 	results := []*api.NetContainerInfo{}
@@ -70,9 +80,13 @@ func inspectNetworks() ([]*api.NetContainerInfo, error) {
 		logrus.Debugf("Network: %s", n.Name)
 
 		nr, err := cli.NetworkInspect(ctx, n.ID, types.NetworkInspectOptions{})
-		if client.IsErrNotFound(err) {
-			logrus.Warnf("The network '%s' might have been just deleted.", n.Name)
-			continue
+		if err != nil {
+			if client.IsErrNotFound(err) {
+				logrus.Warnf("The network '%s' might have been just deleted.", n.Name)
+				continue
+			} else {
+				return nil, fmt.Errorf("error NetworkInspect() on network '%s' : %v", n.Name, err)
+			}
 		}
 		nci := api.NetContainerInfo{Net: n.Name}
 		if nr.Containers != nil && len(nr.Containers) > 0 {

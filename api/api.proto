@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/xinfengliu/ip-overlap-detector/api";
+
+package api;
+
+// The service definition.
+service Worker {
+  rpc GetNetContainerInfo (google.protobuf.Empty) returns (GetNetContainerInfoResponse) {}
+}
+
+
+message GetNetContainerInfoResponse {
+  repeated  NetContainerInfo results= 1;
+}
+
+message NetContainerInfo {
+  string net = 1;
+  repeated ContainerInfo containers =2;
+}
+
+message ContainerInfo { 
+  string name = 1;
+  string ip = 2;
+}

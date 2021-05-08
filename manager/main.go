@@ -26,18 +26,19 @@ import (
 
 const (
 	swarmSocket = "/var/run/docker/swarm/control.sock"
-	maxWorkers  = 30
 )
 
 var (
 	workerRPCPort = 50051
 	intervalSec   = 60 * 10
+	maxWorkers    = 30
 	verbose       bool
 )
 
 func init() {
 	flag.IntVar(&workerRPCPort, "port", 50051, "Worker server published port.")
 	flag.IntVar(&intervalSec, "interval", 600, "interval (seconds) for running the check.")
+	flag.IntVar(&maxWorkers, "c", 30, "max concurrency in getting net info from all nodes.")
 	flag.BoolVar(&verbose, "D", false, "enable debugging log")
 	flag.Parse()
 	if verbose {
@@ -61,7 +62,9 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	do() //do once first
+	// do once first right after the service starting.
+	// one caveat is the worker swarm service has not been ready yet, so errors may happen.
+	do()
 	for {
 		select {
 		case sig := <-sigs:
@@ -74,6 +77,8 @@ func main() {
 	}
 }
 
+// This is a distributed application processing. To make it under
+// control, be sure to setup deadlines for each step processing.
 func do() {
 	logrus.Info("Start Docker Overlay Network IP Overlap Checking...")
 	// find swarm nodes and node network attachments via swarmkit API
@@ -83,6 +88,11 @@ func do() {
 		logrus.Fatal("Quiting.")
 	}
 
+	// For this application, it's enough to use simple concurrency method from
+	// https://gobyexample.com/worker-pools
+	// But need to be careful in using channels, worker must not abort for each processing.
+	// A general and robust approach would be using 'pipeline' pattern like
+	// https://blog.golang.org/pipelines
 	nNodes := len(nodes)
 	jobC := make(chan job, nNodes)
 	resultC := make(chan nodeNetInfo, nNodes)
@@ -131,7 +141,8 @@ func do() {
 	}
 	close(jobC)
 
-	//Wait for all workers done and transform node network info to map
+	// Wait for all workers done and transform node network info to map
+	// Each worker must send result to resultC even if there are errors in doing work.
 	nodeNetInfoMap := make(map[string]map[string][]*napi.ContainerInfo, nNodes)
 	for a := 1; a <= nNodes; a++ {
 		nodeNetInfo := <-resultC
@@ -159,13 +170,18 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo, nodeNAMap
 	var lbErrCnt, olErrCnt uint
 	for node, netInfoMap := range nodeNetInfoMap {
 		naMap := nodeNAMap[node]
+		// when netInfoMap is nil, e.g. getNodeNetinfo() returns err or the node does not run any
+		// containers with overlay network, below codes are skipped automtatically.
 		for net, containers := range netInfoMap {
+			// on swarm manager nodes, 'docker network' API lists all networks even if there's no containers running on the network on the node.
 			if len(containers) == 0 {
 				continue
 			}
 			naIp, exist := naMap[net]
 			if !exist {
-				logrus.Debugf("No networkAttachment in swarm. node: %s, net: %s", node, net)
+				// there are containers on the net on the node from libnetwork's view, but there's no
+				// network attachment from swarm's view. It may be transient (the containers haven't been cleaned up yet)
+				logrus.Warnf("No networkAttachment in swarm. node: %s, net: %s", node, net)
 			}
 			for _, c := range containers {
 				if c.Name == fmt.Sprintf("%s-endpoint", net) {

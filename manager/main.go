@@ -177,17 +177,18 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo, nodeNAMap
 			if len(containers) == 0 {
 				continue
 			}
-			naIp, exist := naMap[net]
-			if !exist {
-				// there are containers on the net on the node from libnetwork's view, but there's no
-				// network attachment from swarm's view. It may be transient (the containers haven't been cleaned up yet)
-				logrus.Warnf("No networkAttachment in swarm. node: %s, net: %s", node, net)
-			}
+			naIp := naMap[net]
 			for _, c := range containers {
 				if c.Name == fmt.Sprintf("%s-endpoint", net) {
 					logrus.Debugf("Libnetwork=> Node: %s, Net: %s, LB IP: %s", node, net, c.Ip)
-					if naIp != "" && c.Ip != naIp {
-						logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIp)
+					if c.Ip != naIp {
+						if naIp != "" {
+							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIp)
+						} else {
+							// there are containers on the net on the node from libnetwork's view, but there's no
+							// network attachment from swarm's view. It may be transient (the containers haven't been cleaned up yet)
+							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, but the NetworkAttachment not existing in swarm.", node, net, c.Ip)
+						}
 						lbErrCnt++
 					}
 				} else {

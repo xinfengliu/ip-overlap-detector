@@ -7,15 +7,16 @@ services:
     deploy:
       mode: global
     networks:
-      - bridge
+      - bridge # must use bridge network
     ports:
-      - published: 50051 #only published on the node running this service
+      - published: 50051
         target: 50051
+        mode: host  # must use host mode
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
   manager:
     image: xinfengliu/iod-manager
-    # command: ["-D", "-interval=10", "-port=50051"] # default 'interval=600' seconds, port=50051
+    # command: ["-D", "-interval=60", "-worker_port=50051"] # default 'interval=600' seconds, worker_port=50051
     deploy:
       placement:
         constraints: [node.role == manager]

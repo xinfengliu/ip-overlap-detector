@@ -29,14 +29,14 @@ const (
 )
 
 var (
-	workerRPCPort = 50051
-	intervalSec   = 60 * 10
-	maxWorkers    = 30
+	workerRPCPort int
+	intervalSec   int
+	maxWorkers    int
 	verbose       bool
 )
 
 func init() {
-	flag.IntVar(&workerRPCPort, "port", 50051, "Worker server published port.")
+	flag.IntVar(&workerRPCPort, "worker_port", 50051, "Worker server published port.")
 	flag.IntVar(&intervalSec, "interval", 600, "interval (seconds) for running the check.")
 	flag.IntVar(&maxWorkers, "c", 30, "max concurrency in getting net info from all nodes.")
 	flag.BoolVar(&verbose, "D", false, "enable debugging log")
@@ -269,7 +269,7 @@ func getNodeNetinfo(address, nodeName string) ([]*napi.NetContainerInfo, error) 
 	logrus.Debugf("Start: get network container info for node '%s', address: %s", nodeName, address)
 	defer logrus.Debugf("End: get network container info for node '%s', address: %s", nodeName, address)
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock(),
-		grpc.WithTimeout(10*time.Second))
+		grpc.WithTimeout(5*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("grpc Dial addr: %s failed, reason: %v", address, err)
 	}

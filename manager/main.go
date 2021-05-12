@@ -57,30 +57,34 @@ type nodeNetInfo struct {
 }
 
 func main() {
+	logrus.Infof("Start the manager service. The IP overlap checking interval is %d seconds", intervalSec)
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	go func() {
+		sig := <-sigs
+		logrus.Infof("Received the signal '%v'.", sig)
+		fmt.Println("Finished.")
+		os.Exit(0)
+	}()
+
 	// do once first right after the service starting.
-	// one caveat is the worker swarm service has not been ready yet, so errors may happen.
+	logrus.Info("Run IP overlap checking for the first time after startup...")
+	logrus.Info("It's possible that the worker service has not been ready yet, errors may happen for this first run.")
 	do()
-	for {
-		select {
-		case sig := <-sigs:
-			logrus.Infof("Received the signal '%v'.", sig)
-			fmt.Println("Finished.")
-			return
-		case <-ticker.C:
-			do()
-		}
+
+	for t := range ticker.C {
+		logrus.Debug(t)
+		do()
 	}
 }
 
 // This is a distributed application processing. To make it under
 // control, be sure to setup deadlines for each step processing.
 func do() {
-	logrus.Info("Start Docker Overlay Network IP Overlap Checking...")
+	logrus.Info("Begin docker overlay network IP overlap checking...")
 	// find swarm nodes and node network attachments via swarmkit API
 	nodes, err := getSwarmNodeList()
 	if err != nil {
@@ -158,7 +162,7 @@ func do() {
 }
 
 func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo, nodeNAMap map[string]map[string]string) {
-	logrus.Debug("Start: IP check.")
+	logrus.Debug("Begin: IP check.")
 	defer logrus.Debug("End: IP check.")
 	type containerDetails struct {
 		node string
@@ -238,7 +242,7 @@ func worker(jobC <-chan job, results chan<- nodeNetInfo) {
 }
 
 func getSwarmNodeList() ([]*api.Node, error) {
-	logrus.Debug("Start: get swarm node network attachment info")
+	logrus.Debug("Begin: get swarm node network attachment info")
 	defer logrus.Debug("End: get swarm node network attachment info")
 	opts := []grpc.DialOption{}
 	insecureCreds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
@@ -267,7 +271,7 @@ func getSwarmNodeList() ([]*api.Node, error) {
 }
 
 func getNodeNetinfo(address, nodeName string) ([]*napi.NetContainerInfo, error) {
-	logrus.Debugf("Start: get network container info for node '%s', address: %s", nodeName, address)
+	logrus.Debugf("Begin: get network container info for node '%s', address: %s", nodeName, address)
 	defer logrus.Debugf("End: get network container info for node '%s', address: %s", nodeName, address)
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock(),
 		grpc.WithTimeout(5*time.Second))

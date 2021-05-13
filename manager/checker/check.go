@@ -41,6 +41,7 @@ func Run(opts *Opts) {
 		logrus.Fatal("Quiting.")
 	}
 	nodeNAMap := getNodeNAMap(nodes)
+	svcVIPMap := getServiceVIPMap()
 
 	// For this application, it's enough to use simple concurrency method from
 	// https://gobyexample.com/worker-pools
@@ -88,7 +89,6 @@ func Run(opts *Opts) {
 		nodeNetInfoMap[nodeNetInfo.nodeName] = netInfoMap
 	}
 
-	svcVIPMap := getServiceVIPMap()
 	// Info collection is done at this point. Run checks.
 	check(nodeNetInfoMap, nodeNAMap, svcVIPMap)
 }
@@ -125,8 +125,23 @@ type serviceDetails struct {
 	vip     string
 }
 
-func getServiceVIPMap() (svcVIPMap map[string]serviceDetails) {
-	svcVIPMap = map[string]serviceDetails{}
+func (s serviceDetails) String() string {
+	return fmt.Sprintf("{service='%s', net='%s', vip='%s'}", s.service, s.net, s.vip)
+}
+
+type containerDetails struct {
+	node string
+	net  string
+	name string
+	ip   string
+}
+
+func (c containerDetails) String() string {
+	return fmt.Sprintf("{node='%s', net='%s', container='%s', ip='%s'}", c.node, c.net, c.name, c.ip)
+}
+
+func getServiceVIPMap() (svcVIPMap map[string][]*serviceDetails) {
+	svcVIPMap = map[string][]*serviceDetails{}
 	svcs, err := swarm.GetSwarmServices()
 	if err != nil {
 		logrus.Error("Error GetSwarmServices():", err)
@@ -154,7 +169,8 @@ func getServiceVIPMap() (svcVIPMap map[string]serviceDetails) {
 				net:     netName,
 				vip:     vip.Addr,
 			}
-			svcVIPMap[vip.Addr] = v
+
+			svcVIPMap[vip.Addr] = append(svcVIPMap[vip.Addr], &v)
 			logrus.Debugf("Service VIP Info => %v", v)
 		}
 	}
@@ -162,18 +178,11 @@ func getServiceVIPMap() (svcVIPMap map[string]serviceDetails) {
 }
 
 func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
-	nodeNAMap map[string]map[string]string, svcVIPMap map[string]serviceDetails) {
+	nodeNAMap map[string]map[string]string, svcVIPMap map[string][]*serviceDetails) {
 
 	logrus.Debug("Begin: IP check.")
 
-	type containerDetails struct {
-		node string
-		net  string
-		name string
-		ip   string
-	}
-
-	ipToContainerMap := make(map[string][]containerDetails)
+	ipToContainerMap := make(map[string][]*containerDetails)
 	var lbErrCnt, olErrCnt uint
 	for node, netInfoMap := range nodeNetInfoMap {
 		naMap := nodeNAMap[node]
@@ -201,9 +210,7 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 				} else {
 					logrus.Debugf("Libnetwork=> Node: %s, Net: %s, Container: %s, IP: %s", node, net, c.Name, c.Ip)
 				}
-				cs := ipToContainerMap[c.Ip]
-				cs = append(cs, containerDetails{node, net, c.Name, c.Ip})
-				ipToContainerMap[c.Ip] = cs
+				ipToContainerMap[c.Ip] = append(ipToContainerMap[c.Ip], &containerDetails{node, net, c.Name, c.Ip})
 			}
 		}
 	}
@@ -213,7 +220,7 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 			logrus.Errorf("Found IP overlap=> IP: %s, %v", ip, cs)
 			olErrCnt++
 		} else if v, ok := svcVIPMap[ip]; ok {
-			logrus.Errorf("Found IP overlap with service VIP => IP: %s, %v", ip, v)
+			logrus.Errorf("Found IP overlap with service VIP => IP: %s, containers: %v, service VIP: %v", ip, cs, v)
 			olErrCnt++
 		} else {
 			logrus.Debugf("OK=> IP: %s, %v", ip, cs)

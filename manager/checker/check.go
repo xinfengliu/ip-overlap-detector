@@ -13,26 +13,8 @@ import (
 
 	napi "github.com/xinfengliu/ip-overlap-detector/api"
 	"github.com/xinfengliu/ip-overlap-detector/manager/swarm"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// Prometheus metrics
-var lbErrs = promauto.NewGauge(prometheus.GaugeOpts{
-	Namespace: "iod",
-	Subsystem: "manager",
-	Name:      "lb_errs",
-	Help:      "Nubmer of Node LB errors found",
-})
-var olErrs = promauto.NewGauge(prometheus.GaugeOpts{
-	Namespace: "iod",
-	Subsystem: "manager",
-	Name:      "ol_errs",
-	Help:      "Number of IP overlaps found",
-})
-
-// Opts are the params used by checker
 type Opts struct {
 	WorkerRPCPort int
 	MaxWorkers    int
@@ -48,7 +30,6 @@ type nodeNetInfo struct {
 	netContainerInfo []*napi.NetContainerInfo
 }
 
-// Run runs the IP overlapping check once.
 // This is a distributed application processing. To make it under
 // control, be sure to setup deadlines for each step processing.
 func Run(opts *Opts) {
@@ -212,13 +193,13 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 			if len(containers) == 0 {
 				continue
 			}
-			naIP := naMap[net]
+			naIp := naMap[net]
 			for _, c := range containers {
 				if c.Name == fmt.Sprintf("%s-endpoint", net) {
 					logrus.Debugf("Libnetwork=> Node: %s, Net: %s, LB IP: %s", node, net, c.Ip)
-					if c.Ip != naIP {
-						if naIP != "" {
-							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIP)
+					if c.Ip != naIp {
+						if naIp != "" {
+							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIp)
 						} else {
 							// there are containers on the net on the node from libnetwork's view, but there's no
 							// network attachment from swarm's view. It may be transient (the containers haven't been cleaned up yet)
@@ -251,15 +232,12 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 	} else {
 		logrus.Infof("Node LB IP check finished, found %d errors", lbErrCnt)
 	}
-	lbErrs.Set(float64(lbErrCnt))
 
 	if olErrCnt == 0 {
 		logrus.Info("IP overlap check finished, no errors found.")
 	} else {
 		logrus.Infof("IP overlap check finished, found %d errors", olErrCnt)
 	}
-	olErrs.Set(float64(olErrCnt))
-
 	logrus.Debug("End: IP check.")
 }
 

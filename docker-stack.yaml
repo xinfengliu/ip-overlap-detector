@@ -23,9 +23,6 @@ services:
       replicas: 1
     networks:
       - bridge
-    ports:
-      - published: 9111
-        target: 9111
     volumes:
       - /var/run/docker/swarm/control.sock:/var/run/docker/swarm/control.sock
 networks:

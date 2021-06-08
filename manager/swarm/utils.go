@@ -11,6 +11,7 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/xnet"
 	"github.com/sirupsen/logrus"
+	"github.com/xinfengliu/ip-overlap-detector/telemetry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -19,9 +20,11 @@ const (
 	swarmSocket = "/var/run/docker/swarm/control.sock"
 )
 
-func GetSwarmNodes() ([]*api.Node, error) {
+// GetSwarmNodes get swarm nodes
+func GetSwarmNodes(octx context.Context) ([]*api.Node, error) {
 	logrus.Debug("Getting swarm nodes info")
-
+	_, span := telemetry.StartTrace(octx, "GetSwarmNodes")
+	defer span.End()
 	conn, err := getSwarmConn()
 	if err != nil {
 		return nil, fmt.Errorf("error getting swarm connection: %v", err)
@@ -42,9 +45,11 @@ func GetSwarmNodes() ([]*api.Node, error) {
 	return r.Nodes, nil
 }
 
-func GetSwarmServices() ([]*api.Service, error) {
+// GetSwarmServices gets swarm services
+func GetSwarmServices(octx context.Context) ([]*api.Service, error) {
 	logrus.Debug("Getting swarm services")
-
+	_, span := telemetry.StartTrace(octx, "GetSwarmServices")
+	defer span.End()
 	conn, err := getSwarmConn()
 	if err != nil {
 		return nil, err
@@ -64,9 +69,11 @@ func GetSwarmServices() ([]*api.Service, error) {
 	return r.Services, nil
 }
 
-func GetSwarmNetworks() ([]*api.Network, error) {
+// GetSwarmNetworks gets swarm newtorks
+func GetSwarmNetworks(octx context.Context) ([]*api.Network, error) {
 	logrus.Debug("Getting swarm networks")
-
+	_, span := telemetry.StartTrace(octx, "GetSwarmNetworks")
+	defer span.End()
 	conn, err := getSwarmConn()
 	if err != nil {
 		return nil, err

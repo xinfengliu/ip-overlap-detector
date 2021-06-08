@@ -10,6 +10,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/xinfengliu/ip-overlap-detector/manager/checker"
+	"github.com/xinfengliu/ip-overlap-detector/telemetry"
 )
 
 var (
@@ -32,6 +33,10 @@ func init() {
 
 func main() {
 	logrus.Infof("Start the manager service. The IP overlap checking interval is %d seconds", intervalSec)
+
+	telemetry.Init()
+	defer telemetry.Shutdown()
+
 	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 	defer ticker.Stop()
 	sigs := make(chan os.Signal, 1)

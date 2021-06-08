@@ -13,8 +13,10 @@ import (
 
 	napi "github.com/xinfengliu/ip-overlap-detector/api"
 	"github.com/xinfengliu/ip-overlap-detector/manager/swarm"
+	"github.com/xinfengliu/ip-overlap-detector/telemetry"
 )
 
+// Opts contains options of running the checker.
 type Opts struct {
 	WorkerRPCPort int
 	MaxWorkers    int
@@ -28,20 +30,25 @@ type job struct {
 type nodeNetInfo struct {
 	nodeName         string
 	netContainerInfo []*napi.NetContainerInfo
+	err              error
 }
 
-// This is a distributed application processing. To make it under
+// Run the check. This is a distributed application processing. To make it under
 // control, be sure to setup deadlines for each step processing.
 func Run(opts *Opts) {
 	logrus.Info("Run docker overlay network IP overlap checking...")
+
+	ctx, span := telemetry.StartTrace(context.Background(), "checker.Run")
+	defer span.End()
+
 	// find swarm nodes and node network attachments via swarmkit API
-	nodes, err := swarm.GetSwarmNodes()
+	nodes, err := swarm.GetSwarmNodes(ctx)
 	if err != nil {
 		logrus.Error("Error getSwarmNodes():", err)
 		logrus.Fatal("Quiting.")
 	}
 	nodeNAMap := getNodeNAMap(nodes)
-	svcVIPMap := getServiceVIPMap()
+	svcVIPMap := getServiceVIPMap(ctx)
 
 	// For this application, it's enough to use simple concurrency method from
 	// https://gobyexample.com/worker-pools
@@ -73,24 +80,28 @@ func Run(opts *Opts) {
 		nWorker = opts.MaxWorkers
 	}
 	for w := 1; w <= nWorker; w++ {
-		go worker(jobC, resultC, opts.WorkerRPCPort)
+		go worker(ctx, jobC, resultC, opts.WorkerRPCPort)
 	}
 	close(jobC)
 
 	// Wait for all workers done and transform node network info to map
 	// Each worker must send result to resultC even if there are errors in doing work.
 	nodeNetInfoMap := make(map[string]map[string][]*napi.ContainerInfo, nNodes)
+	var nodeErrCnt int64
 	for a := 1; a <= nNodes; a++ {
 		nodeNetInfo := <-resultC
+		if nodeNetInfo.err != nil {
+			nodeErrCnt++
+		}
 		netInfoMap := make(map[string][]*napi.ContainerInfo)
 		for _, info := range nodeNetInfo.netContainerInfo {
 			netInfoMap[info.Net] = info.Containers
 		}
 		nodeNetInfoMap[nodeNetInfo.nodeName] = netInfoMap
 	}
-
+	telemetry.SetNodeErrCnt(ctx, nodeErrCnt)
 	// Info collection is done at this point. Run checks.
-	check(nodeNetInfoMap, nodeNAMap, svcVIPMap)
+	checkResult(ctx, nodeNetInfoMap, nodeNAMap, svcVIPMap)
 }
 
 func getNodeNAMap(nodes []*api.Node) map[string]map[string]string {
@@ -140,14 +151,14 @@ func (c containerDetails) String() string {
 	return fmt.Sprintf("{node='%s', net='%s', container='%s', ip='%s'}", c.node, c.net, c.name, c.ip)
 }
 
-func getServiceVIPMap() (svcVIPMap map[string][]*serviceDetails) {
+func getServiceVIPMap(ctx context.Context) (svcVIPMap map[string][]*serviceDetails) {
 	svcVIPMap = map[string][]*serviceDetails{}
-	svcs, err := swarm.GetSwarmServices()
+	svcs, err := swarm.GetSwarmServices(ctx)
 	if err != nil {
 		logrus.Error("Error GetSwarmServices():", err)
 		return
 	}
-	nets, err := swarm.GetSwarmNetworks()
+	nets, err := swarm.GetSwarmNetworks(ctx)
 	if err != nil {
 		logrus.Error("Error GetSwarmNetworks():", err)
 		return
@@ -177,13 +188,16 @@ func getServiceVIPMap() (svcVIPMap map[string][]*serviceDetails) {
 	return
 }
 
-func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
+func checkResult(ctx context.Context, nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 	nodeNAMap map[string]map[string]string, svcVIPMap map[string][]*serviceDetails) {
 
 	logrus.Debug("Begin: IP check.")
 
+	nctx, span := telemetry.StartTrace(ctx, "checkResult")
+	defer span.End()
+
 	ipToContainerMap := make(map[string][]*containerDetails)
-	var lbErrCnt, olErrCnt uint
+	var lbErrCnt, olErrCnt int64
 	for node, netInfoMap := range nodeNetInfoMap {
 		naMap := nodeNAMap[node]
 		// when netInfoMap is nil, e.g. getNodeNetinfo() returns err or the node does not run any
@@ -193,18 +207,25 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 			if len(containers) == 0 {
 				continue
 			}
-			naIp := naMap[net]
+			naIP := naMap[net]
 			for _, c := range containers {
 				if c.Name == fmt.Sprintf("%s-endpoint", net) {
 					logrus.Debugf("Libnetwork=> Node: %s, Net: %s, LB IP: %s", node, net, c.Ip)
-					if c.Ip != naIp {
-						if naIp != "" {
-							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIp)
+					if c.Ip != naIP {
+						if naIP != "" {
+							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, NetworkAttachment IP: %s", node, net, c.Ip, naIP)
 						} else {
 							// there are containers on the net on the node from libnetwork's view, but there's no
 							// network attachment from swarm's view. It may be transient (the containers haven't been cleaned up yet)
 							logrus.Errorf("Incorrect Node LB IP. node: %s, net: %s, LB IP: %s, but the NetworkAttachment not existing in swarm.", node, net, c.Ip)
 						}
+						span.AddEvent("incorrect.node.lb.ip",
+							telemetry.NewAttribute(map[string]string{
+								"node":               node,
+								"net":                net,
+								"lb.ip":              c.Ip,
+								"node.attachment.ip": naIP,
+							}))
 						lbErrCnt++
 					}
 				} else {
@@ -217,9 +238,18 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 
 	for ip, cs := range ipToContainerMap {
 		if len(cs) > 1 {
+			span.AddEvent("ip.overlap", telemetry.NewAttribute(map[string]string{
+				"ip":         ip,
+				"containers": fmt.Sprintf("%v", cs),
+			}))
 			logrus.Errorf("Found IP overlap=> IP: %s, %v", ip, cs)
 			olErrCnt++
 		} else if v, ok := svcVIPMap[ip]; ok {
+			span.AddEvent("ip.overlap.with.service.vip", telemetry.NewAttribute(map[string]string{
+				"ip":         ip,
+				"containers": fmt.Sprintf("%v", cs),
+				"vip":        fmt.Sprintf("%v", v),
+			}))
 			logrus.Errorf("Found IP overlap with service VIP => IP: %s, containers: %v, service VIP: %v", ip, cs, v)
 			olErrCnt++
 		} else {
@@ -232,34 +262,44 @@ func check(nodeNetInfoMap map[string]map[string][]*napi.ContainerInfo,
 	} else {
 		logrus.Infof("Node LB IP check finished, found %d errors", lbErrCnt)
 	}
+	telemetry.SetLbErrCnt(lbErrCnt)
 
 	if olErrCnt == 0 {
 		logrus.Info("IP overlap check finished, no errors found.")
 	} else {
 		logrus.Infof("IP overlap check finished, found %d errors", olErrCnt)
 	}
+	telemetry.SetOlErrCnt(nctx, olErrCnt)
+
 	logrus.Debug("End: IP check.")
 }
 
 // retrieve job, make gRPC call to a node to collect node network info
-func worker(jobC <-chan job, results chan<- nodeNetInfo, port int) {
+func worker(ctx context.Context, jobC <-chan job, resultC chan<- nodeNetInfo, port int) {
 	for job := range jobC {
 		addr := fmt.Sprintf("%s:%d", job.nodeIP, port)
 		nodeName := job.nodeName
-		r, err := getNodeNetinfo(addr, nodeName)
+		r, err := getNodeNetinfo(ctx, addr, nodeName)
 		if err != nil {
 			logrus.Errorf("Error in getNodeNetinfo for node '%s'. %v", nodeName, err)
 		}
-		results <- nodeNetInfo{nodeName, r}
+		resultC <- nodeNetInfo{nodeName, r, err}
 	}
 }
 
-func getNodeNetinfo(address, nodeName string) ([]*napi.NetContainerInfo, error) {
+func getNodeNetinfo(sctx context.Context, address, nodeName string) ([]*napi.NetContainerInfo, error) {
 	logrus.Debugf("Getting network info of containers for node '%s', address: %s", nodeName, address)
+
+	_, span := telemetry.StartTrace(sctx, fmt.Sprintf("%s-getNodeNetinfo", nodeName))
+	defer span.End()
 
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock(),
 		grpc.WithTimeout(5*time.Second))
 	if err != nil {
+		span.AddEvent("grpc.dial.error", telemetry.NewAttribute(map[string]string{
+			"error":   err.Error(),
+			"address": address,
+		}))
 		return nil, fmt.Errorf("grpc Dial addr: %s failed, reason: %v", address, err)
 	}
 	defer conn.Close()
@@ -270,6 +310,8 @@ func getNodeNetinfo(address, nodeName string) ([]*napi.NetContainerInfo, error) 
 
 	r, err := c.GetNetContainerInfo(ctx, &emptypb.Empty{})
 	if err != nil {
+		span.AddEvent("grpc.GetNetContainerInfo.error", telemetry.NewAttribute(map[string]string{
+			"error": err.Error()}))
 		return nil, fmt.Errorf("grpc GetNetContainerInfo() failed, reason: %v", err)
 	}
 

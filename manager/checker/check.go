@@ -158,6 +158,9 @@ func getServiceVIPMap() (svcVIPMap map[string][]*serviceDetails) {
 	}
 
 	for _, svc := range svcs {
+		if svc.Endpoint == nil {
+			continue // services with dnsrr mode
+		}
 		vips := svc.Endpoint.VirtualIPs
 		for _, vip := range vips {
 			netName := netMap[vip.NetworkID]
